@@ -20,6 +20,7 @@ type LockServer struct {
 
   // for each lock name, is it locked?
   locks map[string]bool
+  msgs map[int64]bool
 }
 
 
@@ -32,14 +33,23 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
   ls.mu.Lock()
   defer ls.mu.Unlock()
 
+  old_reply, ok := ls.msgs[args.ID]
+  if ok {
+    reply.OK = old_reply
+    return nil
+  }
 
   locked, _ := ls.locks[args.Lockname]
-
   if locked {
     reply.OK = false
   } else {
-    reply.OK = true
     ls.locks[args.Lockname] = true
+    ls.msgs[args.ID] = true
+    if ls.am_primary {
+      var b_reply LockReply
+      call(ls.backup, "LockServer.Lock", args, &b_reply)
+    }
+    reply.OK = true
   }
 
   return nil
@@ -49,8 +59,27 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 // server Unlock RPC handler.
 //
 func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
+  ls.mu.Lock()
+  defer ls.mu.Unlock()
 
-  // Your code here.
+  old_reply, ok := ls.msgs[args.ID]
+  if ok {
+    reply.OK = old_reply
+    return nil
+  }
+
+  locked, _ := ls.locks[args.Lockname]
+  if locked {
+    ls.locks[args.Lockname] = false
+    ls.msgs[args.ID] = false
+    if ls.am_primary {
+      var b_reply LockReply
+      call(ls.backup, "LockServer.Unlock", args, &b_reply)
+    }
+    reply.OK = true
+  } else {
+    reply.OK = false
+  }
 
   return nil
 }
@@ -90,6 +119,7 @@ func StartServer(primary string, backup string, am_primary bool) *LockServer {
   ls.backup = backup
   ls.am_primary = am_primary
   ls.locks = map[string]bool{}
+  ls.msgs = map[int64]bool{}
 
   // Your initialization code here.
 

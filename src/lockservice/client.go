@@ -62,12 +62,17 @@ func (ck *Clerk) Lock(lockname string) bool {
   // prepare the arguments.
   args := &LockArgs{}
   args.Lockname = lockname
+  args.ID = nrand()
   var reply LockReply
   
   // send an RPC request, wait for the reply.
   ok := call(ck.servers[0], "LockServer.Lock", args, &reply)
   if ok == false {
-    return false
+    ok := call(ck.servers[1], "LockServer.Lock", args, &reply)
+    if ok == false {
+      return false  
+    }
+    return reply.OK
   }
   
   return reply.OK
@@ -79,10 +84,21 @@ func (ck *Clerk) Lock(lockname string) bool {
 // returns true if the lock was previously held,
 // false otherwise.
 //
-
 func (ck *Clerk) Unlock(lockname string) bool {
+  args := &LockArgs{}
+  args.Lockname = lockname
+  args.ID = nrand()
+  var reply LockReply
 
-  // Your code here.
+  // send an RPC request, wait for the reply.
+  ok := call(ck.servers[0], "LockServer.Unlock", args, &reply)
+  if ok == false {
+    ok := call(ck.servers[1], "LockServer.Unlock", args, &reply)
+    if ok == false {
+      return false  
+    }
+    return reply.OK
+  }
 
-  return false
+  return reply.OK
 }
