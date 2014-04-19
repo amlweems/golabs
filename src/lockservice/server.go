@@ -20,6 +20,8 @@ type LockServer struct {
 
   // for each lock name, is it locked?
   locks map[string]bool
+
+  // keep track of each reply
   msgs map[int64]bool
 }
 
@@ -27,11 +29,16 @@ type LockServer struct {
 //
 // server Lock RPC handler.
 //
-// you will have to modify this function
-//
 func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
   ls.mu.Lock()
   defer ls.mu.Unlock()
+
+  if ls.am_primary {
+    go func() {
+      var b_reply LockReply
+      call(ls.backup, "LockServer.Lock", args, &b_reply)
+    }()
+  }
 
   old_reply, ok := ls.msgs[args.ID]
   if ok {
@@ -41,14 +48,11 @@ func (ls *LockServer) Lock(args *LockArgs, reply *LockReply) error {
 
   locked, _ := ls.locks[args.Lockname]
   if locked {
+    ls.msgs[args.ID] = false
     reply.OK = false
   } else {
-    ls.locks[args.Lockname] = true
     ls.msgs[args.ID] = true
-    if ls.am_primary {
-      var b_reply LockReply
-      call(ls.backup, "LockServer.Lock", args, &b_reply)
-    }
+    ls.locks[args.Lockname] = true
     reply.OK = true
   }
 
@@ -62,22 +66,26 @@ func (ls *LockServer) Unlock(args *UnlockArgs, reply *UnlockReply) error {
   ls.mu.Lock()
   defer ls.mu.Unlock()
 
+  if ls.am_primary {
+    go func() {
+      var b_reply LockReply
+      call(ls.backup, "LockServer.Unlock", args, &b_reply)
+    }()
+  }
+
   old_reply, ok := ls.msgs[args.ID]
   if ok {
     reply.OK = old_reply
     return nil
   }
 
-  locked, _ := ls.locks[args.Lockname]
+  locked, ok := ls.locks[args.Lockname]
   if locked {
+    ls.msgs[args.ID] = true
     ls.locks[args.Lockname] = false
-    ls.msgs[args.ID] = false
-    if ls.am_primary {
-      var b_reply LockReply
-      call(ls.backup, "LockServer.Unlock", args, &b_reply)
-    }
     reply.OK = true
   } else {
+    ls.msgs[args.ID] = false
     reply.OK = false
   }
 
@@ -120,9 +128,6 @@ func StartServer(primary string, backup string, am_primary bool) *LockServer {
   ls.am_primary = am_primary
   ls.locks = map[string]bool{}
   ls.msgs = map[int64]bool{}
-
-  // Your initialization code here.
-
 
   me := ""
   if am_primary {
