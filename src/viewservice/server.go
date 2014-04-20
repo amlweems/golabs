@@ -14,16 +14,63 @@ type ViewServer struct {
   dead bool
   me string
 
+  views []View
+  view uint
+  pending uint
+  ping map[string]uint
+  ticks uint
+}
 
-  // Your declarations here.
+func NewView(vs *ViewServer, primary string, backup string) (View, uint) {
+    view := new(View)
+    view.Viewnum = uint(len(vs.views))
+    view.Primary = primary
+    view.Backup = backup
+    vs.views = append(vs.views, *view)
+    return *view, view.Viewnum
 }
 
 //
 // server Ping RPC handler.
 //
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
+  vs.mu.Lock()
+  defer vs.mu.Unlock()
 
-  // Your code here.
+  // some servers are considered dead even when pinging
+  alive := true
+  defer func(){ if alive { vs.ping[args.Me] = vs.ticks } }()
+
+  if vs.view == 0 {
+    reply.View, vs.view = NewView(vs, args.Me, "")
+    return nil
+  }
+
+  curr := &vs.views[vs.view]
+  reply.View = *curr
+  
+  if args.Me == curr.Primary {
+    // primary must ack the current view
+    if args.Viewnum == curr.Viewnum {
+      curr.Acked = true
+    } else {
+      alive = false
+    }
+
+    if vs.pending != 0 && curr.Acked {
+      reply.View = vs.views[vs.pending]
+      vs.view = vs.pending
+      vs.pending = 0
+    }
+  } else if args.Me == curr.Backup {
+    // backup ping, no work needed
+  } else if curr.Backup == "" {
+    // add Me as a backup since we don't have one
+    _, vs.pending = NewView(vs, curr.Primary, args.Me)
+  } else {
+    // Me wants to be a backup backup
+    NewView(vs, curr.Backup, args.Me)
+  }
 
   return nil
 }
@@ -32,12 +79,16 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 // server Get() RPC handler.
 //
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
-
-  // Your code here.
+  vs.mu.Lock()
+  defer vs.mu.Unlock()
+  reply.View = vs.views[vs.view]
 
   return nil
 }
 
+func (vs *ViewServer) isDead(server string) bool {
+  return (vs.ticks - vs.ping[server] >= DeadPings)
+}
 
 //
 // tick() is called once per PingInterval; it should notice
@@ -45,8 +96,36 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 // accordingly.
 //
 func (vs *ViewServer) tick() {
+  vs.mu.Lock()
+  defer vs.mu.Unlock()
+  defer func() { vs.ticks++ }()
 
-  // Your code here.
+  // don't take action unless primary has acked
+  if vs.views[vs.view].Acked == false { return }
+
+  primary := vs.views[vs.view].Primary
+  backup := vs.views[vs.view].Backup
+  if vs.isDead(primary) {
+    // try to find a new backup
+    found := false
+    for c := range vs.views {
+      view := vs.views[c]
+      if view.Primary == backup &&
+        vs.isDead(view.Backup) == false {
+        vs.view = view.Viewnum
+        found = true
+        break
+      }
+    }
+
+    if !found {
+      _, vs.view = NewView(vs, backup, "")
+    }
+  }
+  if vs.isDead(backup) {
+    // kill dead backups
+    vs.views[vs.view].Backup = ""
+  }
 }
 
 //
@@ -62,7 +141,8 @@ func (vs *ViewServer) Kill() {
 func StartServer(me string) *ViewServer {
   vs := new(ViewServer)
   vs.me = me
-  // Your vs.* initializations here.
+  vs.ping = map[string]uint{}
+  vs.views = make([]View, 1)
 
   // tell net/rpc about our RPC server and handlers.
   rpcs := rpc.NewServer()
