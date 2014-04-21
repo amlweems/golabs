@@ -2,12 +2,12 @@ package pbservice
 
 import "viewservice"
 import "net/rpc"
-// You'll probably need to uncomment this:
-// import "time"
+import "time"
 
 
 type Clerk struct {
   vs *viewservice.Clerk
+  primary string
 }
 
 func MakeClerk(vshost string, me string) *Clerk {
@@ -56,10 +56,20 @@ func call(srv string, rpcname string,
 // says the key doesn't exist (has never been Put().
 //
 func (ck *Clerk) Get(key string) string {
+  ck.primary = ck.vs.Primary()
 
-  // Your code here.
-
-  return "???"
+  args := &GetArgs{}
+  args.Key = key
+  var reply GetReply
+  var ok bool = false
+  for !ok {
+    ok = call(ck.primary, "PBServer.Get", args, &reply)
+    if !ok {
+      ck.primary = ck.vs.Primary()
+      time.Sleep(viewservice.PingInterval)
+    }
+  }
+  return reply.Value
 }
 
 //
@@ -67,6 +77,18 @@ func (ck *Clerk) Get(key string) string {
 // must keep trying until it succeeds.
 //
 func (ck *Clerk) Put(key string, value string) {
+  ck.primary = ck.vs.Primary()
 
-  // Your code here.
+  args := &PutArgs{}
+  args.Key = key
+  args.Value = value
+  var reply PutReply
+  var ok bool = false
+  for !ok {
+    ok = call(ck.primary, "PBServer.Put", args, &reply)
+    if !ok {
+      ck.primary = ck.vs.Primary()
+      time.Sleep(viewservice.PingInterval)
+    }
+  }
 }

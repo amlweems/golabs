@@ -19,21 +19,51 @@ type PBServer struct {
   unreliable bool // for testing
   me string
   vs *viewservice.Clerk
-  // Your declarations here.
+
+  am_primary bool
+  view viewservice.View
+  storage map[string]string
 }
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
 
-  // Your code here.
+  if pb.me != pb.view.Primary && pb.me != pb.view.Backup {
+    // we're not a valid server
+    reply.Err = ErrWrongServer
+    return nil
+  }
+
+  var ok bool
+  reply.Value, ok = pb.storage[args.Key]
+  if ok {
+    reply.Err = OK
+  } else {
+    reply.Err = ErrNoKey
+  }
 
   return nil
 }
 
 func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if pb.me != pb.view.Primary && pb.me != pb.view.Backup {
+    // we're not a valid server
+    reply.Err = ErrWrongServer
+  }
+
   reply.Err = OK
+  pb.storage[args.Key] = args.Value
 
-
-  // Your code here.
+  if pb.am_primary && pb.view.Backup != "" {
+    ok := call(pb.view.Backup, "PBServer.Put", args, &reply)
+    if ok == false {
+      // uh-oh
+    }
+  }
 
   return nil
 }
@@ -46,8 +76,28 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 //   manage transfer of state from primary to new backup.
 //
 func (pb *PBServer) tick() {
+  view, ok := pb.vs.Ping(pb.view.Viewnum)
+  if ok != nil {
+    // uh-oh
+  }
 
-  // Your code here.
+  if view.Viewnum != pb.view.Viewnum {
+    // transition to a new view
+    pb.am_primary = (pb.me == view.Primary)
+    pb.view = view
+    if pb.am_primary && pb.view.Backup != "" {
+      args := &PutArgs{}
+      var reply PutReply
+      for key, value := range pb.storage {
+        args.Key = key
+        args.Value = value
+        ok := call(pb.view.Backup, "PBServer.Put", args, &reply)
+        if ok == false {
+          // uh-oh
+        }
+      }
+    }
+  }
 }
 
 // tell the server to shut itself down.
@@ -62,7 +112,8 @@ func StartServer(vshost string, me string) *PBServer {
   pb := new(PBServer)
   pb.me = me
   pb.vs = viewservice.MakeClerk(me, vshost)
-  // Your pb.* initializations here.
+
+  pb.storage = map[string]string{}
 
   rpcs := rpc.NewServer()
   rpcs.Register(pb)
